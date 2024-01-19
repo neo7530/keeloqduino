@@ -1,15 +1,15 @@
 /* 
 
-433MHz Kelloq compatible transmitter
+433MHz / IR KeeLoq compatible transmitter
 
 8MHz internal, BOD 2.7v, 2 or 4 Buttons. (Burn Bootloader to set the right fuses)
 
           ATTiny85
-          ___  ___
-RESET   -|   \/   |-   V+
-Button  -|        |-   Button
-Button  -|        |-   OOK-Transmitter Data
-GND     -|________|-   Button
+           ___  ___
+5 RESET   -|   \/   |-   V+
+4 Button  -|        |-   Button 2
+3 Button  -|        |-   OOK-Transmitter Data 1
+  GND     -|________|-   Button 0
 
 Buttons = GND when pressed
 
@@ -21,6 +21,8 @@ Buttons = GND when pressed
 #define OOK_PIN 1
 #define MOD_PPM 1
 #define MOD_PWM 0
+#define IR 0 //IF set - 38kHz IR-Carrier will be used at OOK-PIN
+
 
 // Buttons
 const int S1 = 4;
@@ -29,17 +31,17 @@ const int S3 = 2;
 const int S4 = 0;
 
 unsigned int modulation   = 0;          // PWM = 0, PPM = 1
-unsigned int repeats      = 2;          // signal repeats
+unsigned int repeats      = 11;          // signal repeats
 unsigned int bits         = 66;         // amount of bits in a packet
 unsigned int pd_len       = 3000;       // pulse/distance length (in us) used for time between preamble and data
 unsigned int zero_ca_len  = 800;        // length of 0 (in us)
 unsigned int zero_ci_len  = 400;       // length of 0 (in us)
 unsigned int one_ca_len   = 400;       // length of 1 (in us)
 unsigned int one_ci_len   = 800;        // length of 0 (in us)
-unsigned int pause_len    = 10000;      // pause length (in us), time between packets
+unsigned int pause_len    = 15000;      // pause length (in us), time between packets
 unsigned int invert       = 0;          // invert the bits before transmit
 unsigned int lsb          = 1;          // send LSB first
-char packet_buf[80]      = {0};        // packet payload buffer
+char packet_buf[12]      = {0};        // packet payload buffer
 unsigned int pbuf_len     = 0;          // payload buffer length
 unsigned int bit_pos      = 0;          // bit reader bit position
 int carrier_mode          = 0;
@@ -49,9 +51,9 @@ int carrier_mode          = 0;
 #define bit(x,n)    (((x)>>(n))&1)
 #define g5(x,a,b,c,d,e) (bit(x,a)+bit(x,b)*2+bit(x,c)*4+bit(x,d)*8+bit(x,e)*16)
 
-uint64_t k = 0x0123456789ABCDEF; //System-Code
+uint64_t k = 0x1122334455667788; //System-Code
 uint64_t k1; //Device-Code
-uint32_t serial = 0x01440001; //hexadecimal Serial-Number 32Bit
+uint32_t serial = 0x01440001; //hexadecimal Serial-Number
 uint32_t fixed = 0; //fixed code-segment
 uint32_t hopping = 0; //hopping code
 uint32_t button; //buttons
@@ -75,6 +77,19 @@ uint32_t decrypt (const uint32_t data, const uint64_t key){
   return x;
 }
 
+void pwm_on()
+{ 
+  TCCR1 = 1<<PWM1A | 1<<CS10| 1<<COM1A1;
+  }
+
+void pwm_off()
+{ 
+  TCCR1 = 0;
+  }
+
+
+
+
 int get_bit() {
   int ret;
   int byte_pos;
@@ -91,6 +106,15 @@ if(lsb){
   return ret^invert;
 }
 
+void setup_pwm(){
+  //PWM on PIN1 using Timer 1 
+  pinMode(1, OUTPUT); // 1<<DDB1: PWM output on pin 1 (OC1A)
+  TCCR1 = 1<<PWM1A | 1<<CS10| 1<<COM1A1;
+  GTCCR = 0; //0<<PWM1B | 0<<COM1B1 | 0<<COM1B0;
+  OCR1C = 211;
+  OCR1A = 105;  // (103+1)/(205+1) = 0.50 = 50% duty cycle
+}
+
 int transmit() {
   int i,j;
   int bit;
@@ -100,9 +124,9 @@ int transmit() {
   for (j=0 ; j<repeats ; j++) {
 
   for(i=0;i<12;i++){ //preamble 
-      digitalWrite(OOK_PIN, HIGH);
+      IR ? pwm_on() : digitalWrite(OOK_PIN, HIGH);
       delayMicroseconds(one_ca_len);
-      digitalWrite(OOK_PIN, LOW);
+      IR ? pwm_off() : digitalWrite(OOK_PIN, LOW);
       delayMicroseconds(one_ca_len);
     }
 
@@ -115,14 +139,14 @@ int transmit() {
     for (i=0 ; i<bits ; i++) {
       bit = get_bit();
       if ((modulation==MOD_PPM) || (modulation==MOD_PWM)) {
-        digitalWrite(OOK_PIN, HIGH);
+        IR ? pwm_on() : digitalWrite(OOK_PIN, HIGH);
         if (bit) {
           delayMicroseconds(one_ca_len);
-          digitalWrite(OOK_PIN, LOW);
+          IR ? pwm_off() : digitalWrite(OOK_PIN, LOW);
           delayMicroseconds(one_ci_len);
         } else {
           delayMicroseconds(zero_ca_len);
-          digitalWrite(OOK_PIN, LOW);
+          IR ? pwm_off() : digitalWrite(OOK_PIN, LOW);
           delayMicroseconds(zero_ci_len);
         }
       } else {
@@ -132,10 +156,10 @@ int transmit() {
     
     // Send ending PPM pulse
     if (modulation == MOD_PPM) {
-        digitalWrite(OOK_PIN, HIGH);
+        IR ? pwm_on() : digitalWrite(OOK_PIN, HIGH);
 //        digitalWrite(LED_PIN, HIGH);
         delayMicroseconds(pd_len);
-        digitalWrite(OOK_PIN, LOW);
+        IR ? pwm_off() : digitalWrite(OOK_PIN, LOW);
 //        digitalWrite(LED_PIN, LOW);    
     }
     // delay between packets
@@ -188,6 +212,11 @@ void setup() {
       EEPROM.put(0,ctr);
     }; 
 
+  if(IR)
+  {
+    setup_pwm();  
+    pwm_off();
+  }
 
   update_tx();
 
@@ -211,10 +240,12 @@ void loop() {
   sleep_enable();
   sleep_cpu();
  delay(200); //debounce keys
-do{
+
+
   update_tx(); //code buttons, generate keeloq-frame
   delay(100);
   transmit(); //blast it out
+do{
 }while (!digitalRead(0) || !digitalRead(2) || !digitalRead(3)|| !digitalRead(4)); //as long a button is pressed
 
 ctr++; //increment counter
